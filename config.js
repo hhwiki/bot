@@ -40,7 +40,7 @@ const STATUS_OPTIONS = [
 module.exports = {
     BOT_NAME,
     WIKIS,
-    WIKI_MAP,
+    // WIKI_MAP,
     DEFAULT_WIKI,
     COMMANDS,
     CONTRIBSCORES_SCORE_EMOJI,
