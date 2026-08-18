@@ -91,7 +91,7 @@ function getWikiAndPage(messageContent, channel) {
             channel?.parent?.parent?.id
         ].filter(Boolean).map(String);
         const configuredId = channelAndCategoryIds.find(id => WIKI_MAP[id]);
-        const wikiKey = WIKI_MAP[configuredId] || "superstar-racers";
+        const wikiKey = WIKI_MAP[configuredId] || "hh-wiki";
         wikiConfig = WIKIS[wikiKey];
     }
 

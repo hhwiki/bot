@@ -1,43 +1,20 @@
 // --- WIKI CONFIGURATION ---
-const BOT_NAME = "Wiki Guy"; 
+const BOT_NAME = "Macademia"; 
 
 const WIKIS = {
-    "super-blox-64": {
-        name: "SUPER BLOX 64!",
-        baseUrl: "https://sb64.conecorp.cc",
-        apiEndpoint: "https://sb64.conecorp.cc/w/api.php",
-        articlePath: "https://sb64.conecorp.cc/",
-        prefix: "sb64",
-        emoji: "1472436401680158741"
-    },
-    "superstar-racers": {
-        name: "Superstar Racers",
-        baseUrl: "https://sr.conecorp.cc",
-        apiEndpoint: "https://sr.conecorp.cc/w/api.php",
-        articlePath: "https://sr.conecorp.cc/",
-        prefix: "sr",
-        emoji: "1472436382998728714"
-    },
-    "a-blocks-journey": {
-        name: "A Block's Journey",
-        baseUrl: "https://abj.conecorp.cc",
-        apiEndpoint: "https://abj.conecorp.cc/w/api.php",
-        articlePath: "https://abj.conecorp.cc/",
-        prefix: "abj",
-        emoji: "1472436415760568460"
+    "hh-wiki": {
+        name: "Horrific Housing Wiki",
+        baseUrl: "https://housing.miraheze.org",
+        apiEndpoint: "https://housing.miraheze.org/w/api.php",
+        articlePath: "https:/housing.miraheze.org/",
+        prefix: "hh",
+        emoji: "1539215118397739069"
     }
-};
-
-// Map a channel or category ID to a wiki.
-const WIKI_MAP = {
-    "1286781988669231166": "super-blox-64",
-    "1389381096436793484": "superstar-racers",
-    "1454904248943771748": "a-blocks-journey"
 };
 
 // Enable or disable slash commands. Disabled commands are not registered with Discord.
 const COMMANDS = {
-    speedrun: true,
+    speedrun: false,
     contribs: true,
     wiki: true,
     parse: true,
@@ -45,27 +22,15 @@ const COMMANDS = {
     random: true,
 };
 
-const SPEEDRUN_EMOJI = "1477323785366540439";
-const CONTRIBSCORES_SCORE_EMOJI = "1472433775593000961";
+const CONTRIBSCORES_SCORE_EMOJI = "1539214681791537152";
 
 const STATUS_INTERVAL_MS = 5 * 60 * 1000;
 
 // --- DISCORD STATUSES ---
 const STATUS_OPTIONS = [
     { type: 4, text: "just send [[a page]] or {{a page}}!" },
-    { type: 4, text: "use [[sb64:page]] for SUPER BLOX 64! embedding" },
-    { type: 4, text: "use [[sr:Page]] for Superstar Racers embedding" },
-    { type: 4, text: "use [[abj:Page]] for A Block's Journey embedding" },
-    { type: 4, text: "abj.conecorp.cc" },
-    { type: 4, text: "sr.conecorp.cc" },
-    { type: 4, text: "sb64.conecorp.cc" },
-    { type: 0, text: "SUPER BLOX 64!" },
-    { type: 0, text: "Superstar Racers" },
-    { type: 0, text: "A Block's Journey" },
-    { type: 5, text: "SUPER BLOX 64!" },
-    { type: 5, text: "Superstar Racers" },
-    { type: 5, text: "A Block's Journey" },
-    { type: 3, text: "A Block's Journey teaser trailer" },
+    { type: 4, text: "don't use fandom!" },
+    { type: 0, text: "housing.miraheze.org" },
     { type: 4, text: "edit your message and my embed will too!" },
     { type: 4, text: "react with :wastebasket: on my messages & i'll delete!" },
 ];
