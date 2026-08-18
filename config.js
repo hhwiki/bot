@@ -6,7 +6,7 @@ const WIKIS = {
         name: "Horrific Housing Wiki",
         baseUrl: "https://housing.miraheze.org",
         apiEndpoint: "https://housing.miraheze.org/w/api.php",
-        articlePath: "https:/housing.miraheze.org/",
+        articlePath: "https://housing.miraheze.org/wiki/",
         prefix: "hh",
         emoji: "1539215118397739069"
     }
