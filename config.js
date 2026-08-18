@@ -12,14 +12,7 @@ const WIKIS = {
     }
 };
 
-// Map a channel or category ID to a wiki.
-const WIKI_MAP = {
-    "1286781988669231166": "super-blox-64",
-    "1389381096436793484": "superstar-racers",
-    "1454904248943771748": "a-blocks-journey"
-};
-
-const DEFAULT_WIKI = "superstar-racers";
+const DEFAULT_WIKI = "hh-wiki";
 
 // Enable or disable slash commands. Disabled commands are not registered with Discord.
 const COMMANDS = {
