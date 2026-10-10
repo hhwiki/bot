@@ -66,7 +66,12 @@ function pruneMap(map, maxSize = 1000) {
 
 function sendInteractionError(interaction, error, tag) {
     console.error(`Error handling ${tag} interaction:`, error);
-    const errorMsg = { content: 'An error occurred while processing your request.', ephemeral: true };
+    if (error?.code === 10062) {
+        console.error(`Failed to respond to ${tag}: interaction expired or was already acknowledged.`);
+        return;
+    }
+
+    const errorMsg = { content: 'An error occurred while processing your request.', flags: MessageFlags.Ephemeral };
     if (interaction.replied || interaction.deferred) {
         return interaction.followUp(errorMsg).catch(() => {});
     } else {
@@ -313,10 +318,18 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
         wikiConfig = explicitWiki;
         rawPageName = explicitPrefix[2].trim();
     } else {
-        const interwikiPage = await resolveInterwikiPage(rawPageName, wikiConfig);
-        if (interwikiPage) {
-            wikiConfig = interwikiPage.wikiConfig;
-            rawPageName = interwikiPage.pageName;
+        // namespace links are also valid page names. check the configured wiki
+        // first so [[File:...]] and [[User:...]] do not trigger a slow
+        // interwiki lookup when the local page exists.
+        const localPageName = String(rawPageName).split('#', 1)[0].trim();
+        const localPage = await getPageData(localPageName, wikiConfig, { allowSearch: false });
+
+        if (!localPage) {
+            const interwikiPage = await resolveInterwikiPage(rawPageName, wikiConfig);
+            if (interwikiPage) {
+                wikiConfig = interwikiPage.wikiConfig;
+                rawPageName = interwikiPage.pageName;
+            }
         }
     }
 
@@ -372,7 +385,7 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
             const username = userMatch[1].trim();
             const profile = await getUserProfile(username, wikiConfig);
             if (!profile) {
-                return await smartReply({ content: `User "${username}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], ephemeral: true, allowedMentions: { parse: [] } });
+                return await smartReply({ content: `User "${username}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
             }
             const container = buildUserEmbed(profile, wikiConfig);
             return await smartReply({ content: "", components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
@@ -381,7 +394,7 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
         if (String(rawPageName).trim().toLowerCase() === "special:random") {
             const randomTitle = await getRandomPage(wikiConfig);
             if (!randomTitle) {
-                return await smartReply({ content: `Unable to find a random page on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], ephemeral: true, allowedMentions: { parse: [] } });
+                return await smartReply({ content: `Unable to find a random page on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
             }
             rawPageName = randomTitle;
         }
@@ -440,13 +453,17 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
                 allowedMentions: { repliedUser: false },
             });
         } else {
-            return await smartReply({ content: `Page "${rawPageName}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], ephemeral: true, allowedMentions: { parse: [] }});
+            return await smartReply({ content: `Page "${rawPageName}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] }});
         }
 
     } catch (err) {
         console.error("Error handling request:", err);
-        const errorMsg = { content: "An error occurred while processing your request.", ephemeral: true };
+        const errorMsg = { content: "An error occurred while processing your request.", flags: MessageFlags.Ephemeral };
         if (isInteraction(messageOrInteraction)) {
+            if (err?.code === 10062) {
+                console.error("Failed to send request error: interaction expired or was already acknowledged.");
+                return;
+            }
             if (messageOrInteraction.replied) {
                 await messageOrInteraction.followUp(errorMsg).catch(() => {});
             } else if (messageOrInteraction.deferred) {
@@ -465,13 +482,13 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
 
 async function handleInteraction(interaction) {
     if (interaction.isCommand() && COMMANDS[interaction.commandName] === false) {
-        return interaction.reply({ content: 'This command is currently disabled.', ephemeral: true }).catch(() => {});
+        return interaction.reply({ content: 'This command is currently disabled.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
 
     if (interaction.isButton() && interaction.customId === 'contribs:help') {
         return interaction.reply({
             content: `In contribution score lists, <:playerpoint:${CONTRIBSCORES_SCORE_EMOJI}> is the score: \`unique pages edited + 2 × √(total edits − unique pages edited)\`. ✏️ is the number of edits (revisions) counted for the selected period.`,
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
         }).catch(() => {});
     }
 
@@ -535,7 +552,7 @@ async function handleInteraction(interaction) {
                 let categoryId;
                 if (filter === 'individual_map') {
                     if (!levelId) {
-                        return interaction.reply({ content: 'You must select a level when using the "Individual map" filter.', ephemeral: true });
+                        return interaction.reply({ content: 'You must select a level when using the "Individual map" filter.', flags: MessageFlags.Ephemeral });
                     }
                     if (version === 'v13') {
                         categoryId = SR_CATEGORY_IDS.INDIVIDUAL_LEVELS_V13;
@@ -567,7 +584,7 @@ async function handleInteraction(interaction) {
                 const categoryId = interaction.options.getString('category');
                 response = await handleSpeedrunRequest(interaction, 'abj', categoryId);
             } else {
-                return interaction.reply({ content: 'Unknown subcommand.', ephemeral: true }).catch(() => {});
+                return interaction.reply({ content: 'Unknown subcommand.', flags: MessageFlags.Ephemeral }).catch(() => {});
             }
 
             if (response && response.id) {
