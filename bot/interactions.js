@@ -6,7 +6,7 @@ const {
     linkIntroductionPageName,
     resolveInterwikiPage,
 } = require("../functions/page.js");
-const { getRandomPage } = require("../functions/random.js");
+const { getRandomPage, getRandomRootPage } = require("../functions/random.js");
 const { getUserProfile } = require("../functions/user.js");
 const { handleFileRequest } = require("../functions/file.js");
 const { handleContribScoresRequest } = require("../functions/contribs.js");
@@ -46,6 +46,10 @@ const toggleContribScore = COMMANDS.contribs === true;
 
 function getInteractionWikiKey(interaction, allowRandom = false) {
     return interaction.options.getString('wiki') || SINGLE_WIKI_KEY || (allowRandom ? nextRandomWikiKey() : null);
+}
+
+function getEphemeralReplyOptions(interaction) {
+    return interaction.options.getBoolean('ephemeral') ? { flags: MessageFlags.Ephemeral } : {};
 }
 
 function getWikiDisplayName(wikiConfig) {
@@ -219,26 +223,7 @@ function buildPageEmbed(title, content, imageUrl, wikiConfig, gallery = null, bu
 
     if (title) {
         try {
-            let pageUrl;
-            if (title === "Special:ContributionScores") {
-                pageUrl = `${wikiConfig.articlePath}Special:ContributionScores?utm_source=${encodeURIComponent(getBotName())}`;
-            } else {
-                const isSectionLink = String(title).includes(" § ");
-                const titleStr = String(title);
-                let pageOnly, frag;
-                if (isSectionLink) {
-                    const idx = titleStr.indexOf(" § ");
-                    pageOnly = idx !== -1 ? titleStr.slice(0, idx) : titleStr;
-                    frag = idx !== -1 ? titleStr.slice(idx + 3) : undefined;
-                } else {
-                    const idx = titleStr.indexOf("#");
-                    pageOnly = idx !== -1 ? titleStr.slice(0, idx) : titleStr;
-                    frag = idx !== -1 ? titleStr.slice(idx + 1) : undefined;
-                }
-                const parts = pageOnly.split(':').map(s => encodeURIComponent(s.replace(/ /g, "_")));
-                const anchor = frag ? '#' + encodeURIComponent(frag.replace(/ /g, '_')) : '';
-                pageUrl = `${wikiConfig.articlePath}${parts.join(':')}?utm_source=${encodeURIComponent(getBotName())}${anchor}`;
-            }
+            const pageUrl = getPageUrl(title, wikiConfig);
 
             const row = new ActionRowBuilder();
             const btn = new ButtonBuilder()
@@ -264,6 +249,73 @@ function buildPageEmbed(title, content, imageUrl, wikiConfig, gallery = null, bu
     }
 
     return container;
+}
+
+function getPageUrl(title, wikiConfig) {
+    if (title === "Special:ContributionScores") {
+        return `${wikiConfig.articlePath}Special:ContributionScores?utm_source=${encodeURIComponent(getBotName())}`;
+    }
+
+    const titleStr = String(title);
+    const separator = titleStr.includes(" § ") ? " § " : "#";
+    const index = titleStr.indexOf(separator);
+    const pageOnly = index === -1 ? titleStr : titleStr.slice(0, index);
+    const fragment = index === -1 ? undefined : titleStr.slice(index + separator.length);
+    const parts = pageOnly.split(':').map(part => encodeURIComponent(part.replace(/ /g, "_")));
+    const anchor = fragment ? `#${encodeURIComponent(fragment.replace(/ /g, '_'))}` : '';
+    return `${wikiConfig.articlePath}${parts.join(':')}?utm_source=${encodeURIComponent(getBotName())}${anchor}`;
+}
+
+function buildPageButtons(pageRequests) {
+    const rows = [];
+
+    for (let index = 0; index < pageRequests.length && index < 25; index += 5) {
+        const row = new ActionRowBuilder();
+        for (const request of pageRequests.slice(index, index + 5)) {
+            const button = new ButtonBuilder()
+                .setLabel(String(request.label || request.rawPageName).slice(0, 80))
+                .setStyle(ButtonStyle.Link)
+                .setURL(getPageUrl(request.rawPageName, request.wikiConfig));
+            if (request.wikiConfig.emoji) button.setEmoji(request.wikiConfig.emoji);
+            row.addComponents(button);
+        }
+        rows.push(row);
+    }
+
+    return rows;
+}
+
+async function handleMultiplePageRequests(pageRequests, messageOrInteraction, botMessageToEdit = null) {
+    const resolvedRequests = await Promise.all(pageRequests.map(async request => {
+        const localPageName = String(request.rawPageName).split('#', 1)[0].trim();
+        const localPage = await getPageData(localPageName, request.wikiConfig, { allowSearch: false });
+        if (localPage) return request;
+
+        const interwikiPage = await resolveInterwikiPage(request.rawPageName, request.wikiConfig);
+        if (!interwikiPage) return request;
+
+        return {
+            ...request,
+            wikiConfig: interwikiPage.wikiConfig,
+            rawPageName: interwikiPage.pageName
+        };
+    }));
+    const components = buildPageButtons(resolvedRequests);
+    const payload = {
+        content: "",
+        components,
+        flags: MessageFlags.IsComponentsV2,
+        allowedMentions: { parse: [] }
+    };
+
+    if (botMessageToEdit) return botMessageToEdit.edit(payload);
+    if (messageOrInteraction.editReply || messageOrInteraction.followUp) {
+        if (messageOrInteraction.replied) return messageOrInteraction.followUp(payload);
+        if (messageOrInteraction.deferred) return messageOrInteraction.editReply(payload);
+        return messageOrInteraction.reply(payload);
+    }
+    if (typeof messageOrInteraction.reply === "function") return messageOrInteraction.reply(payload);
+    return messageOrInteraction.channel?.send(payload);
 }
 
 function buildUserEmbed(profile, wikiConfig) {
@@ -391,10 +443,14 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
             return await smartReply({ content: "", components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
         }
 
-        if (String(rawPageName).trim().toLowerCase() === "special:random") {
-            const randomTitle = await getRandomPage(wikiConfig);
+        const requestedPageName = String(rawPageName).trim().toLowerCase();
+        if (requestedPageName === "special:random" || requestedPageName === "special:randomrootpage") {
+            const randomTitle = requestedPageName === "special:randomrootpage"
+                ? await getRandomRootPage(wikiConfig)
+                : await getRandomPage(wikiConfig);
             if (!randomTitle) {
-                return await smartReply({ content: `Unable to find a random page on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+                const pageType = requestedPageName === "special:randomrootpage" ? "random root page" : "random page";
+                return await smartReply({ content: `Unable to find a ${pageType} on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
             }
             rawPageName = randomTitle;
         }
@@ -453,7 +509,12 @@ async function handleUserRequest(wikiConfig, rawPageName, messageOrInteraction, 
                 allowedMentions: { repliedUser: false },
             });
         } else {
-            return await smartReply({ content: `Page "${rawPageName}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] }});
+            const response = await smartReply({ content: `Page "${rawPageName}" not found on [${getWikiDisplayName(wikiConfig)}](<${wikiConfig.baseUrl}>).`, components: [], flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] }});
+            if (!isInteraction(messageOrInteraction) && response?.delete) {
+                const deleteTimeout = setTimeout(() => response.delete().catch(() => {}), 5000);
+                deleteTimeout.unref?.();
+            }
+            return response;
         }
 
     } catch (err) {
@@ -604,7 +665,7 @@ async function handleInteraction(interaction) {
         }
 
         try {
-            if (!interaction.deferred && !interaction.replied) await interaction.deferReply();
+            if (!interaction.deferred && !interaction.replied) await interaction.deferReply(getEphemeralReplyOptions(interaction));
 
             // Just the wiki link, per user request
             const response = await interaction.editReply({
@@ -634,10 +695,10 @@ async function handleInteraction(interaction) {
             return;
         }
         try {
-            if (!interaction.deferred && !interaction.replied) await interaction.deferReply();
+            if (!interaction.deferred && !interaction.replied) await interaction.deferReply(getEphemeralReplyOptions(interaction));
             const pageName = interaction.commandName === 'user'
                 ? `User:${interaction.options.getString('username')}`
-                : 'Special:Random';
+                : interaction.options.getBoolean('rootpage') ? 'Special:RandomRootPage' : 'Special:Random';
             const response = await handleUserRequest(wikiConfig, pageName, interaction, null, interaction.commandName === 'random' ? '🎲' : null);
             if (response && response.id) {
                 botToAuthorMap.set(response.id, interaction.user.id);
@@ -657,7 +718,7 @@ async function handleInteraction(interaction) {
         }
 
         try {
-            if (!interaction.deferred && !interaction.replied) await interaction.deferReply();
+            if (!interaction.deferred && !interaction.replied) await interaction.deferReply(getEphemeralReplyOptions(interaction));
 
             let response;
             if (subCommand === 'page') {
@@ -691,6 +752,7 @@ module.exports = {
     handleInteraction,
     handleUserRequest,
     buildPageEmbed,
+    handleMultiplePageRequests,
     responseMap,
     botToAuthorMap,
     pruneMap
