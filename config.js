@@ -3,7 +3,7 @@ const BOT_NAME = "Macademia";
 
 const WIKIS = {
     "hh-wiki": {
-        name: "Horrific Housing Wiki",
+        name: "Horrific Housing",
         baseUrl: "https://housing.miraheze.org",
         apiEndpoint: "https://housing.miraheze.org/w/api.php",
         articlePath: "https://housing.miraheze.org/wiki/",
