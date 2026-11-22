@@ -20,6 +20,20 @@ const wikiChoices = Object.entries(WIKIS).map(([key, wiki]) => ({
     name: wiki.name,
     value: key
 }));
+const hasMultipleWikis = Object.keys(WIKIS).length > 1;
+const wikiOption = (required = true) => ({
+    name: 'wiki',
+    description: 'The wiki to search in',
+    type: 3,
+    required,
+    choices: wikiChoices
+});
+const ephemeralOption = {
+    name: 'ephemeral',
+    description: 'Only show the response to you',
+    type: 5,
+    required: false
+};
 
 const allCommands = [
     {
@@ -52,7 +66,8 @@ const allCommands = [
                         description: 'Filter by glitch category',
                         type: 5, // BOOLEAN
                         required: false
-                    }
+                    },
+                    ephemeralOption
                 ]
             },
             {
@@ -87,7 +102,8 @@ const allCommands = [
                         type: 3, // STRING
                         required: false,
                         choices: SR_EVENTS_CHOICES
-                    }
+                    },
+                    ephemeralOption
                 ]
             },
             {
@@ -101,7 +117,8 @@ const allCommands = [
                         type: 3, // STRING
                         required: true,
                         choices: ABJ_CATEGORIES
-                    }
+                    },
+                    ephemeralOption
                 ]
             }
         ]
@@ -112,13 +129,19 @@ const allCommands = [
         integrationTypes: [0, 1],
         contexts: [0, 1, 2],
         options: [
+            ...(hasMultipleWikis ? [wikiOption(true)] : []),
             {
-                name: 'wiki',
-                description: 'Select a wiki',
+                name: 'category',
+                description: 'The time period to view contribution scores for',
                 type: 3, // STRING
-                required: true,
-                choices: wikiChoices
-            }
+                required: false,
+                choices: [
+                    { name: 'Last 7 days', value: '7' },
+                    { name: 'Last 30 days', value: '30' },
+                    { name: 'All time', value: '0' }
+                ]
+            },
+            ephemeralOption
         ]
     },
     {
@@ -127,13 +150,8 @@ const allCommands = [
         integrationTypes: [0, 1],
         contexts: [0, 1, 2],
         options: [
-            {
-                name: 'wiki',
-                description: 'The wiki to link to',
-                type: 3, // STRING
-                required: true,
-                choices: wikiChoices
-            }
+            ...(hasMultipleWikis ? [wikiOption(true)] : []),
+            ephemeralOption
         ]
     },
     {
@@ -147,13 +165,7 @@ const allCommands = [
                 description: 'Search for a wiki page',
                 type: 1, // SUB_COMMAND
                 options: [
-                    {
-                        name: 'wiki',
-                        description: 'The wiki to search in',
-                        type: 3, // STRING
-                        required: true,
-                        choices: wikiChoices
-                    },
+                    ...(hasMultipleWikis ? [wikiOption(true)] : []),
                     {
                         name: 'page',
                         description: 'The page to search for',
@@ -167,7 +179,8 @@ const allCommands = [
                         type: 3, // STRING
                         required: false,
                         autocomplete: true
-                    }
+                    },
+                    ephemeralOption
                 ]
             },
             {
@@ -175,20 +188,15 @@ const allCommands = [
                 description: 'Search for a wiki file',
                 type: 1, // SUB_COMMAND
                 options: [
-                    {
-                        name: 'wiki',
-                        description: 'The wiki to search in',
-                        type: 3, // STRING
-                        required: true,
-                        choices: wikiChoices
-                    },
+                    ...(hasMultipleWikis ? [wikiOption(true)] : []),
                     {
                         name: 'file',
                         description: 'The file to search for',
                         type: 3, // STRING
                         required: true,
                         autocomplete: true
-                    }
+                    },
+                    ephemeralOption
                 ]
             }
         ]
@@ -199,8 +207,9 @@ const allCommands = [
         integrationTypes: [0, 1],
         contexts: [0, 1, 2],
         options: [
-            { name: 'wiki', description: 'The wiki to search in', type: 3, required: true, choices: wikiChoices },
-            { name: 'username', description: 'The wiki username', type: 3, required: true, autocomplete: true }
+            ...(hasMultipleWikis ? [wikiOption(true)] : []),
+            { name: 'username', description: 'The wiki username', type: 3, required: true, autocomplete: true },
+            ephemeralOption
         ]
     },
     {
@@ -209,7 +218,14 @@ const allCommands = [
         integrationTypes: [0, 1],
         contexts: [0, 1, 2],
         options: [
-            { name: 'wiki', description: 'The wiki to search in', type: 3, required: false, choices: wikiChoices }
+            ...(hasMultipleWikis ? [wikiOption(false)] : []),
+            {
+                name: 'rootpage',
+                description: 'Only choose pages without subpages',
+                type: 5,
+                required: false
+            },
+            ephemeralOption
         ]
     }
 ];

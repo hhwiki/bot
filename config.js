@@ -8,13 +8,15 @@ const WIKIS = {
         apiEndpoint: "https://housing.miraheze.org/w/api.php",
         articlePath: "https://housing.miraheze.org/wiki/",
         prefix: "hh",
-        emoji: "1539215118397739069"
+        emoji: "1539215118397739069",
+        default: true
     }
 };
 
-const DEFAULT_WIKI = "hh-wiki";
+// Map a channel or category ID to a wiki.
+const WIKI_MAP = {
+};
 
-// Enable or disable slash commands. Disabled commands are not registered with Discord.
 const COMMANDS = {
     speedrun: false,
     contribs: true,
@@ -24,9 +26,18 @@ const COMMANDS = {
     random: true,
 };
 
-const CONTRIBSCORES_SCORE_EMOJI = "1539214681791537152";
+const INLINE_TEXT = true;
+
+const EMOJIS = {
+    speedrun: "1477323785366540439",
+    contribs: "1539214681791537152"
+};
+
+const WEB_SERVER = true;
 
 const STATUS_INTERVAL_MS = 5 * 60 * 1000;
+const PAGE_CACHE_MS = 30 * 60 * 1000;
+const NOT_FOUND_DELETE_MS = 5000;
 
 // --- DISCORD STATUSES ---
 const STATUS_OPTIONS = [
@@ -40,10 +51,13 @@ const STATUS_OPTIONS = [
 module.exports = {
     BOT_NAME,
     WIKIS,
-    // WIKI_MAP,
-    DEFAULT_WIKI,
+    WIKI_MAP: typeof WIKI_MAP !== "undefined" ? WIKI_MAP : undefined,
     COMMANDS,
-    CONTRIBSCORES_SCORE_EMOJI,
+    INLINE_TEXT,
+    EMOJIS,
+    WEB_SERVER,
     STATUS_INTERVAL_MS,
+    PAGE_CACHE_MS,
+    NOT_FOUND_DELETE_MS,
     STATUS_OPTIONS
 };

@@ -1,19 +1,20 @@
 const { fetch } = require("./utils.js");
-const { BOT_NAME, CONTRIBSCORES_SCORE_EMOJI } = require("../config.js");
+const { EMOJIS } = require("../config.js");
+const { getBotName } = require("../bot/name.js");
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 
-async function getContributionScores(wikiConfig) {
+async function getContributionScores(wikiConfig, days = "7") {
     try {
         const params = new URLSearchParams({
             action: "parse",
             format: "json",
-            text: "{{Special:ContributionScores/10/7}}", 
+            text: `{{Special:ContributionScores/10/${days}}}`,
             prop: "text",
             disablelimitreport: "true"
         });
 
         const url = `${wikiConfig.apiEndpoint}?${params.toString()}`;
-        const res = await fetch(url, { headers: { "User-Agent": `${BOT_NAME} Discord bot` } });
+        const res = await fetch(url, { headers: { "User-Agent": `${getBotName()} Discord bot` } });
         const json = await res.json();
         const html = json.parse?.text?.["*"];
 
@@ -26,8 +27,12 @@ async function getContributionScores(wikiConfig) {
         const rows = html.split('<tr class="">');
         rows.shift(); // Remove header
 
+        // MediaWiki Contribution Scores extension: 0 = all time
+        // https://www.mediawiki.org/wiki/Extension:Contribution_Scores
+        const periodLabel = days === "0" ? "all time" : `the past ${days} days`;
+
         let dataSummary = `## Edit leaderboard for [${wikiConfig.name}](${wikiConfig.articlePath}Special:ContributionScores)\n`;
-        dataSummary += `-# Top 10 users over the past 7 days\n`;
+        dataSummary += `-# Top 10 users over ${periodLabel}\n`;
         
         // Extract raw data into an array
         const userData = rows.map((row) => {
@@ -49,8 +54,10 @@ async function getContributionScores(wikiConfig) {
         userData.forEach((data, i) => {
             const paddedScore = data.score.padStart(maxScoreLength, ' ');
             const paddedEdits = data.edits.padStart(maxEditLength, ' ');
+            const usernamePath = encodeURIComponent(data.user.trim().replace(/\s+/g, "_"));
         
-            dataSummary += `${i + 1}. <:playerpoint:${CONTRIBSCORES_SCORE_EMOJI}> \`${paddedScore}\`    ✏️ \`${paddedEdits}\`    **[@${data.user}](${wikiConfig.articlePath}User:${data.user})**\n`;
+            const scoreEmoji = EMOJIS?.contribs ? `<:playerpoint:${EMOJIS.contribs}> ` : "";
+            dataSummary += `${i + 1}. ${scoreEmoji}\`${paddedScore}\`    ✏️ \`${paddedEdits}\`    **[@${data.user}](${wikiConfig.articlePath}User:${usernamePath})**\n`;
         });
 
         if (!dataSummary) return {
@@ -68,25 +75,32 @@ async function getContributionScores(wikiConfig) {
     }
 }
 
-async function handleContribScoresRequest(interaction, { toggleContribScore, WIKIS, buildPageEmbed, botToAuthorMap, pruneMap, MessageFlags }) {
+async function handleContribScoresRequest(request, { toggleContribScore, WIKIS, buildPageEmbed, botToAuthorMap, pruneMap, MessageFlags, wikiConfig: requestedWikiConfig = null, category = "7" }) {
     if (!toggleContribScore) {
-        await interaction.reply({ content: 'Contribution scores are currently disabled.', ephemeral: true });
+        await request.reply({ content: 'Contribution scores are currently disabled.', flags: MessageFlags.Ephemeral });
         return;
     }
-    const wikiKey = interaction.options.getString('wiki');
-    const wikiConfig = WIKIS[wikiKey];
+    const isInteraction = typeof request.deferReply === 'function';
+    const wikiKey = isInteraction
+        ? request.options.getString('wiki') || (Object.keys(WIKIS).length === 1 ? Object.keys(WIKIS)[0] : null)
+        : null;
+    const wikiConfig = requestedWikiConfig || WIKIS[wikiKey];
 
     if (!wikiConfig) {
-       await interaction.reply({ content: 'Unknown wiki selection.', ephemeral: true });
+       await request.reply({ content: 'Unknown wiki selection.', flags: MessageFlags.Ephemeral });
        return;
     }
 
     try {
-        await interaction.deferReply();
-        const result = await getContributionScores(wikiConfig);
+        if (isInteraction) {
+            const ephemeral = request.options.getBoolean('ephemeral');
+            await request.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
+        }
+        const result = await getContributionScores(wikiConfig, category);
         
         if (result.error) {
-            await interaction.editReply({ content: result.error });
+            if (isInteraction) return await request.editReply({ content: result.error });
+            return await request.reply({ content: result.error });
         } else {
             const container = buildPageEmbed(result.title, result.result, null, wikiConfig);
             container.addActionRowComponents(new ActionRowBuilder().addComponents(
@@ -95,22 +109,32 @@ async function handleContribScoresRequest(interaction, { toggleContribScore, WIK
                     .setLabel("What does this mean?")
                     .setStyle(ButtonStyle.Secondary)
             ));
-            const response = await interaction.editReply({
+            const payload = {
                 components: [container],
                 flags: MessageFlags.IsComponentsV2
-            });
+            };
+            const response = isInteraction
+                ? await request.editReply(payload)
+                : await request.reply(payload);
             if (response && response.id) {
-                botToAuthorMap.set(response.id, interaction.user.id);
-                pruneMap(botToAuthorMap);
+                if (request.user?.id) {
+                    botToAuthorMap.set(response.id, request.user.id);
+                    pruneMap(botToAuthorMap);
+                }
             }
+            return response;
         }
     } catch (err) {
         console.error("Error in handleContribScoresRequest:", err);
+        if (err?.code === 10062) {
+            console.error("Failed to respond to contribution scores: interaction expired or was already acknowledged.");
+            return;
+        }
         try {
-            if (interaction.deferred || interaction.replied) {
-                await interaction.editReply({ content: "An error occurred while fetching contribution scores." });
+            if (isInteraction && (request.deferred || request.replied)) {
+                await request.editReply({ content: "An error occurred while fetching contribution scores." });
             } else {
-                await interaction.reply({ content: "An error occurred while fetching contribution scores.", ephemeral: true });
+                await request.reply({ content: "An error occurred while fetching contribution scores.", flags: MessageFlags.Ephemeral });
             }
         } catch (secondaryErr) {
             console.error("Failed to send error reply:", secondaryErr);

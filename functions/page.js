@@ -1,13 +1,40 @@
 const { fetch, truncateToParagraphs: truncateContentToParagraphs } = require("./utils.js");  
-const { BOT_NAME } = require("../config.js");
+const { PAGE_CACHE_MS, WIKIS } = require("../config.js");
+const { getBotName } = require("../bot/name.js");
 const cheerio = require('cheerio');
 
-const BOT_USER_AGENT = `${BOT_NAME} Discord bot`;
+const getBotUserAgent = () => `${getBotName()} Discord bot`;
+
+// MediaWiki serves Special:Badtitle when a requested title is invalid. It is
+// never a real page the bot should embed, even though the API reports it as
+// an existing page (often as the target of a redirect).
+function isBadTitle(title) {
+    return String(title ?? '').trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ') === 'special:badtitle';
+}
 
 // --- CACHING ---
 const CANONICAL_CACHE = new Map();
 const PAGE_DATA_CACHE = new Map();
+const INTERWIKI_CACHE = new Map();
 const MAX_CACHE_SIZE = 500;
+const CACHE_MS = PAGE_CACHE_MS;
+
+function getCachedValue(map, key) {
+    const entry = map.get(key);
+    if (!entry) return undefined;
+
+    if (Date.now() >= entry.expiresAt) {
+        map.delete(key);
+        return undefined;
+    }
+
+    return entry.value;
+}
+
+function setCachedValue(map, key, value) {
+    map.set(key, { value, expiresAt: Date.now() + CACHE_MS });
+    pruneCache(map);
+}
 
 function pruneCache(map) {
     while (map.size > MAX_CACHE_SIZE) {
@@ -100,6 +127,18 @@ function htmlToMarkdown(html, baseUrl, $existing = null) {
     }
 
     // Remove unwanted elements
+    $('.toc, #toc, .mw-table-of-contents').remove();
+    $('.tabber').each((_, tabber) => {
+        const $tabber = $(tabber);
+        const title = cleanSectionName($tabber.find('.tabber__header--title').first().text());
+        if (title) $tabber.prepend(`<h2>${title}</h2>`);
+    });
+    $('.tabbernav, .tabber__header, .tabber__tabs, .tabber__indicator').remove();
+    $('.tabbertab[title]').each((_, tab) => {
+        const $tab = $(tab);
+        const title = cleanSectionName($tab.attr('title'));
+        if (title) $tab.prepend(`<h2>${title}</h2>`);
+    });
     $('style, script, .thumb, figure, table, .mw-editsection, sup.reference, .noprint, .nomobile, .error, input, .ext-floatingui-content, .infobox, .portable-infobox, table[class*="infobox"], ol.references, .mw-collapsed, .template-navplate').remove();
 
     function convertNode(node) {
@@ -184,7 +223,8 @@ async function findCanonicalTitle(input, wikiConfig) {
     const wikiKey = wikiConfig.prefix || wikiConfig.baseUrl;
     const cacheKey = `${wikiKey}:${raw.toLowerCase()}`;
 
-    if (CANONICAL_CACHE.has(cacheKey)) return CANONICAL_CACHE.get(cacheKey);
+    const cachedCanonical = getCachedValue(CANONICAL_CACHE, cacheKey);
+    if (cachedCanonical !== undefined) return cachedCanonical;
 
     try {
         // direct lookup
@@ -197,7 +237,7 @@ async function findCanonicalTitle(input, wikiConfig) {
         });
 
         const res = await fetch(`${wikiConfig.apiEndpoint}?${directParams.toString()}`, { 
-            headers: { "User-Agent": BOT_USER_AGENT } 
+            headers: { "User-Agent": getBotUserAgent() }
         });
         const json = await res.json();
         const pageId = json.query?.pageids?.[0];
@@ -206,8 +246,8 @@ async function findCanonicalTitle(input, wikiConfig) {
         // if found directly or through redirect return the canonical title
         if (page && page.missing === undefined) {
             const canonical = page.title;
-            CANONICAL_CACHE.set(cacheKey, canonical);
-            pruneCache(CANONICAL_CACHE);
+            if (isBadTitle(canonical)) return null;
+            setCachedValue(CANONICAL_CACHE, cacheKey, canonical);
             return canonical;
         }
 
@@ -221,7 +261,7 @@ async function findCanonicalTitle(input, wikiConfig) {
         });
 
         const searchRes = await fetch(`${wikiConfig.apiEndpoint}?${searchParams.toString()}`, {
-            headers: { "User-Agent": BOT_USER_AGENT }
+            headers: { "User-Agent": getBotUserAgent() }
         });
         const searchJson = await searchRes.json();
         const topResult = searchJson.query?.search?.[0];
@@ -229,8 +269,8 @@ async function findCanonicalTitle(input, wikiConfig) {
         // return the title of the top search result if it exists
         if (topResult) {
             const canonical = topResult.title;
-            CANONICAL_CACHE.set(cacheKey, canonical);
-            pruneCache(CANONICAL_CACHE);
+            if (isBadTitle(canonical)) return null;
+            setCachedValue(CANONICAL_CACHE, cacheKey, canonical);
             return canonical;
         }
     } catch (err) {
@@ -240,18 +280,21 @@ async function findCanonicalTitle(input, wikiConfig) {
     return null;
 }
 
-async function getPageData(input, wikiConfig) {
+async function getPageData(input, wikiConfig, { allowSearch = true } = {}) {
     if (!input) return null;
     const raw = String(input).trim();
     const wikiKey = wikiConfig.prefix || wikiConfig.baseUrl;
     const cacheKey = `${wikiKey}:${raw.toLowerCase()}`;
 
     // 1. Check Cache
-    if (CANONICAL_CACHE.has(cacheKey)) {
-        const canonical = CANONICAL_CACHE.get(cacheKey);
+    const cachedCanonical = getCachedValue(CANONICAL_CACHE, cacheKey);
+    if (cachedCanonical !== undefined) {
+        if (isBadTitle(cachedCanonical)) return null;
+        const canonical = cachedCanonical;
         const pageCacheKey = `${wikiKey}:${canonical}`;
-        if (PAGE_DATA_CACHE.has(pageCacheKey)) {
-            return { canonical, ...PAGE_DATA_CACHE.get(pageCacheKey) };
+        const cachedPageData = getCachedValue(PAGE_DATA_CACHE, pageCacheKey);
+        if (cachedPageData !== undefined) {
+            return { canonical, ...cachedPageData };
         }
     }
 
@@ -269,7 +312,7 @@ async function getPageData(input, wikiConfig) {
         });
 
         const res = await fetch(`${wikiConfig.apiEndpoint}?${params.toString()}`, {
-            headers: { "User-Agent": BOT_USER_AGENT }
+            headers: { "User-Agent": getBotUserAgent() }
         });
         const json = await res.json();
 
@@ -278,6 +321,7 @@ async function getPageData(input, wikiConfig) {
 
         // 3. If missing, try intitle search
         if (!page || page.missing !== undefined) {
+            if (!allowSearch) return null;
             const canonical = await findCanonicalTitle(raw, wikiConfig);
             if (canonical && canonical !== raw) {
                 return await getPageData(canonical, wikiConfig);
@@ -287,17 +331,16 @@ async function getPageData(input, wikiConfig) {
 
         // 4. Extract data
         const canonical = page.title;
+        if (isBadTitle(canonical)) return null;
         const extract = page.extract ? htmlToMarkdown(page.extract, wikiConfig.baseUrl) : null;
         const imageUrl = getFullSizeImageUrl(page.thumbnail?.source || null);
 
         const data = { extract, imageUrl };
 
         // 5. Update Cache
-        CANONICAL_CACHE.set(cacheKey, canonical);
-        pruneCache(CANONICAL_CACHE);
+        setCachedValue(CANONICAL_CACHE, cacheKey, canonical);
 
-        PAGE_DATA_CACHE.set(`${wikiKey}:${canonical}`, data);
-        pruneCache(PAGE_DATA_CACHE);
+        setCachedValue(PAGE_DATA_CACHE, `${wikiKey}:${canonical}`, data);
 
         return { canonical, ...data };
 
@@ -307,12 +350,182 @@ async function getPageData(input, wikiConfig) {
     }
 }
 
+function getInterwikiPrefix(input) {
+    const match = String(input || '').trim().match(/^([A-Za-z][A-Za-z0-9_-]*):(.+)$/s);
+    if (!match) return null;
+    return { prefix: match[1], pageName: match[2].trim() };
+}
+
+async function getInterwikiEntries(sourceWikiConfig, prefix) {
+    const sourceKey = sourceWikiConfig.prefix || sourceWikiConfig.baseUrl;
+    const cacheKey = `${sourceKey}:${prefix.toLowerCase()}`;
+    const cached = getCachedValue(INTERWIKI_CACHE, cacheKey);
+    if (cached !== undefined) return cached;
+
+    const entries = [];
+    const addEntry = entry => {
+        if (!entry?.url || !String(entry.url).includes('$1')) return;
+        if (!entries.some(existing => existing.url === entry.url)) entries.push(entry);
+    };
+
+    try {
+        const params = new URLSearchParams({
+            action: 'query',
+            meta: 'siteinfo',
+            siprop: 'interwikimap',
+            format: 'json'
+        });
+        const res = await fetch(`${sourceWikiConfig.apiEndpoint}?${params.toString()}`, {
+            headers: { 'User-Agent': getBotUserAgent() }
+        });
+        const json = await res.json();
+        for (const entry of json.query?.interwikemap || []) {
+            if (String(entry.prefix || '').toLowerCase() === prefix.toLowerCase()) addEntry(entry);
+        }
+    } catch (err) {
+        console.warn('interwiki api lookup failed:', err?.message || err);
+    }
+
+    try {
+        const res = await fetch(`${sourceWikiConfig.baseUrl}/Special:Interwiki`, {
+            headers: { 'User-Agent': getBotUserAgent() }
+        });
+        const $ = cheerio.load(await res.text());
+        $('.mw-interwikitable-row').each((_, row) => {
+            const cells = $(row).find('td');
+            const rowPrefix = cells.eq(0).text().trim();
+            const rowUrl = cells.filter('.mw-interwikitable-url').first().text().trim();
+            if (rowPrefix.toLowerCase() === prefix.toLowerCase()) {
+                addEntry({ prefix: rowPrefix, url: rowUrl });
+            }
+        });
+    } catch (err) {
+        console.warn('special interwiki lookup failed:', err?.message || err);
+    }
+
+    setCachedValue(INTERWIKI_CACHE, cacheKey, entries);
+    return entries;
+}
+
+function selectInterwikiEntry(entries, pageName) {
+    if (entries.length <= 1) return entries[0] || null;
+
+    const pagePartCount = pageName.split(':').length;
+    const matchingEntries = entries.filter(entry => {
+        const placeholders = new Set(String(entry.url).match(/\$(\d+)/g) || []);
+        return placeholders.size === pagePartCount;
+    });
+    return matchingEntries[0] || entries[0];
+}
+
+function expandInterwikiTemplate(template, pageName) {
+    const pageParts = pageName.split(':');
+    const placeholders = [...String(template).matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
+    const maxPlaceholder = Math.max(...placeholders, 1);
+    const values = new Map();
+
+    for (let index = 1; index <= maxPlaceholder; index++) {
+        const value = pageParts[pageParts.length - index] || '';
+        values.set(index, value.replace(/ /g, '_'));
+    }
+
+    return String(template).replace(/\$(\d+)/g, (_, index) => {
+        const value = values.get(Number(index)) || '';
+        return Number(index) === 1 ? '$1' : encodeURIComponent(value);
+    });
+}
+
+async function resolveInterwikiPage(input, sourceWikiConfig, depth = 0) {
+    const parsed = getInterwikiPrefix(input);
+    if (!parsed || !sourceWikiConfig) return null;
+    if (depth > 3) return null;
+
+    const hashIndex = parsed.pageName.indexOf('#');
+    const targetPageName = hashIndex === -1 ? parsed.pageName : parsed.pageName.slice(0, hashIndex).trim();
+    const fragment = hashIndex === -1 ? '' : parsed.pageName.slice(hashIndex + 1).trim();
+    if (!targetPageName) return null;
+
+    const sourceConfigs = [
+        sourceWikiConfig,
+        ...Object.values(WIKIS).filter(wiki => wiki !== sourceWikiConfig)
+    ];
+    let interwiki = null;
+
+    for (const candidateWiki of sourceConfigs) {
+        const entries = await getInterwikiEntries(candidateWiki, parsed.prefix);
+        const candidateInterwiki = selectInterwikiEntry(entries, targetPageName);
+        if (candidateInterwiki) {
+            interwiki = candidateInterwiki;
+            break;
+        }
+    }
+
+    if (!interwiki) return null;
+
+    const articleTemplate = interwiki.url || interwiki.iw_url;
+    if (!articleTemplate) return null;
+
+    const expandedTemplate = expandInterwikiTemplate(articleTemplate, targetPageName);
+    const articlePath = expandedTemplate.slice(0, expandedTemplate.indexOf('$1'));
+    const templateParts = targetPageName.split(':');
+    const placeholderCount = new Set(articleTemplate.match(/\$(\d+)/g) || []).size;
+    const resolvedPageName = placeholderCount > 1 ? templateParts.at(-1) : targetPageName;
+    if (isBadTitle(resolvedPageName)) return null;
+    let targetBaseUrl;
+    try {
+        targetBaseUrl = new URL(articlePath).origin;
+    } catch {
+        return null;
+    }
+
+    const apiEndpoint = interwiki.api || interwiki.iw_api || `${targetBaseUrl}/w/api.php`;
+    const targetWikiConfig = {
+        name: interwiki.name || interwiki.sitename || interwiki.prefix || parsed.prefix,
+        baseUrl: targetBaseUrl,
+        apiEndpoint,
+        articlePath,
+        prefix: interwiki.prefix || parsed.prefix,
+        emoji: null
+    };
+
+    // resolve nested interwiki links
+    // the first prefix can point at a wiki whose own interwiki map contains the next prefix.
+    const nestedPage = getInterwikiPrefix(resolvedPageName);
+    if (nestedPage && placeholderCount === 1) {
+        const resolvedNestedPage = await resolveInterwikiPage(resolvedPageName, targetWikiConfig, depth + 1);
+        if (resolvedNestedPage) {
+            return {
+                wikiConfig: resolvedNestedPage.wikiConfig,
+                pageName: `${resolvedNestedPage.pageName}${fragment ? `#${fragment}` : ''}`
+            };
+        }
+    }
+
+    // special pages do not appear in the regular page query.
+    if (/^Special:/i.test(resolvedPageName)) {
+        return {
+            wikiConfig: targetWikiConfig,
+            pageName: `${resolvedPageName}${fragment ? `#${fragment}` : ''}`
+        };
+    }
+
+    // the interwiki map only describes a destination. confirm the actual page
+    // exists there before treating the link as embeddable.
+    const pageData = await getPageData(resolvedPageName, targetWikiConfig, { allowSearch: false });
+    if (!pageData) return null;
+
+    return {
+        wikiConfig: targetWikiConfig,
+        pageName: `${pageData.canonical}${fragment ? `#${fragment}` : ''}`
+    };
+}
+
 async function getSectionChoices(pageTitle, prefix, wikiConfig) {
     if (!pageTitle || !wikiConfig) return [];
     const canonical = await findCanonicalTitle(pageTitle, wikiConfig) || pageTitle;
     const params = new URLSearchParams({ action: "parse", format: "json", prop: "sections", page: canonical });
     try {
-        const res = await fetch(`${wikiConfig.apiEndpoint}?${params}`, { headers: { "User-Agent": BOT_USER_AGENT } });
+        const res = await fetch(`${wikiConfig.apiEndpoint}?${params}`, { headers: { "User-Agent": getBotUserAgent() } });
         const sections = (await res.json()).parse?.sections || [];
         const search = String(prefix || "").toLowerCase();
         return sections
@@ -339,7 +552,7 @@ async function getWikiContent(pageTitle, wikiConfig) {
     try {
         const res = await fetch(`${wikiConfig.apiEndpoint}?${params.toString()}`, {
             headers: {
-                "User-Agent": BOT_USER_AGENT,
+                "User-Agent": getBotUserAgent(),
                 "Origin": wikiConfig.baseUrl,
             },
         });
@@ -368,7 +581,7 @@ async function getSectionIndex(pageTitle, sectionName, wikiConfig) {
 
     try {
         const res = await fetch(`${wikiConfig.apiEndpoint}?${params}`, {
-            headers: { "User-Agent": BOT_USER_AGENT }
+            headers: { "User-Agent": getBotUserAgent() }
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         const json = await res.json();
@@ -431,7 +644,7 @@ async function getSectionContent(pageTitle, sectionName, wikiConfig) {
 
     try {
         const res = await fetch(`${wikiConfig.apiEndpoint}?${params}`, {
-            headers: { "User-Agent": BOT_USER_AGENT }
+            headers: { "User-Agent": getBotUserAgent() }
         });
         const json = await res.json();
 
@@ -488,7 +701,7 @@ async function getLeadSection(pageTitle, wikiConfig) {
 
     try {
         const res = await fetch(`${wikiConfig.apiEndpoint}?${params.toString()}`, {
-            headers: { "User-Agent": BOT_USER_AGENT }
+            headers: { "User-Agent": getBotUserAgent() }
         });
         const json = await res.json();
         const pages = json.query?.pages;
@@ -510,6 +723,7 @@ async function parseWikiLinks(text, wikiConfig) {
 
     while ((match = regex.exec(text)) !== null) {
         matches.push({
+            fullMatch: match[0],
             index: match.index,
             length: match[0].length,
             page: match[1].trim(),
@@ -519,7 +733,13 @@ async function parseWikiLinks(text, wikiConfig) {
 
     const processed = await Promise.all(matches.map(async m => {
         const display = m.label || m.page;
-        const canonical = await findCanonicalTitle(m.page, wikiConfig) || m.page;
+        // [[:Page]] links to the main namespace page, escaping the default
+        // behavior for e.g. files and categories.
+        const targetPage = m.page.startsWith(":") ? m.page.slice(1).trim() : m.page;
+        if (isBadTitle(targetPage)) {
+            return { index: m.index, length: m.length, replacement: m.fullMatch };
+        }
+        const canonical = await findCanonicalTitle(targetPage, wikiConfig) || targetPage;
 
         let pageOnly = canonical;
         let fragment = null;
@@ -560,9 +780,19 @@ async function parseTemplates(text, wikiConfig) {
 
     const processedMatches = await Promise.all(matches.map(async (m) => {
         const { fullMatch, templateName, param, index, length } = m;
-        let replacement = fullMatch; 
+        let replacement = fullMatch;
 
-        const canonical = await findCanonicalTitle(templateName, wikiConfig);
+        // Template embeds default to the Template: namespace. {{:this}} means
+        // the main namespace page and {{:Help:this}} means Help:this, matching
+        // wikitext transclusion rules.
+        let pageTitle = templateName.trim();
+        if (pageTitle.startsWith(":")) {
+            pageTitle = pageTitle.slice(1).trim();
+        } else if (!pageTitle.includes(":")) {
+            pageTitle = `Template:${pageTitle}`;
+        }
+
+        const canonical = await findCanonicalTitle(pageTitle, wikiConfig);
         if (!canonical) {
             return { index, length, replacement: "I don't know." };
         }
@@ -594,7 +824,7 @@ async function parseTemplates(text, wikiConfig) {
             const anchor = resolvedFragment ? `#${encodeURIComponent(resolvedFragment.replace(/ /g, "_"))}` : '';
             const link = `<${wikiConfig.articlePath}${parts.join(':')}${anchor}>`;
 
-            replacement = `**${templateName}** → ${truncateContentToParagraphs(actualText)}\n${link}`;
+            replacement = `**${pageTitle}** → ${truncateContentToParagraphs(actualText)}\n${link}`;
         } else {
             replacement = "I don't know.";
         }
@@ -621,7 +851,8 @@ module.exports = {
     parseWikiLinks, 
     parseTemplates,
     getFullSizeImageUrl,
-    linkIntroductionPageName
+    linkIntroductionPageName,
+    resolveInterwikiPage
 };
 
 

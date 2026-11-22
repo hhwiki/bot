@@ -5,10 +5,12 @@ const { commands } = require("./bot/commands.js");
 const { 
     handleInteraction,
     handleUserRequest,
+    handleMultiplePageRequests,
     responseMap,
     botToAuthorMap,
     pruneMap
 } = require("./bot/interactions.js");
+const { findSyntaxMatches } = require("./bot/messageParser.js");
 
 const {
     Client,
@@ -19,9 +21,10 @@ const {
 const {
     WIKIS,
     WIKI_MAP,
-    DEFAULT_WIKI,
+    INLINE_TEXT,
     STATUS_INTERVAL_MS
 } = require("./config.js");
+const { setDiscordBotName } = require("./bot/name.js");
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
@@ -31,15 +34,6 @@ const PREFIX_WIKI_MAP = Object.keys(WIKIS).reduce((acc, key) => {
     if (prefix) acc[prefix] = key;
     return acc;
 }, {});
-
-// joins all prefixes into a string like "a|b|c"
-const prefixPattern = Object.values(WIKIS).map(w => w.prefix).join('|');
-
-const syntaxRegex = new RegExp(
-    `\\{\\{(?:(${prefixPattern}):)?([^{}|]+)(?:\\|[^{}]*)?\\}\\}|` +
-    `\\[\\[(?:(${prefixPattern}):)?([^\\]|]+)(?:\\|[^[\\]]*)?\\]\\]`,
-    "i"
-);
 
 // -------------------- CLIENT SETUP --------------------
 const client = new Client({
@@ -56,6 +50,7 @@ const client = new Client({
 
 client.once("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
+    setDiscordBotName(client.user.username);
     setRandomStatus(client);
     setInterval(() => { setRandomStatus(client); }, STATUS_INTERVAL_MS);
 
@@ -73,36 +68,48 @@ function isUnknownMessageError(error) {
     return error?.code === 10008 || error?.rawError?.code === 10008;
 }
 
-function getWikiAndPage(messageContent, channel) {
-    if (typeof messageContent !== "string") return null;
-
-    const match = messageContent.match(syntaxRegex);
-    if (!match) return null;
-
+function getWikiAndPageFromMatch(match, channel) {
+    const isTemplate = match[2] !== undefined;
     const prefix = match[1] || match[3];
-    let rawPageName = (match[2] || match[4]).trim();
+    const matchedRaw = (match[2] || match[4]).trim();
+    // A leading colon means "main namespace" in wikitext ({{:Page}}, [[:Page]]).
+    const escapeDefaultNamespace = matchedRaw.startsWith(":");
+    const matchedPageName = escapeDefaultNamespace ? matchedRaw.slice(1).trim() : matchedRaw;
+    let rawPageName = matchedPageName;
+
+    // The channel's wiki is also the source wiki for resolving unknown
+    // interwiki prefixes. Keep this lookup available for both unprefixed
+    // pages and prefixes that are not configured in config.js.
+    const channelAndCategoryIds = [
+        channel?.id,
+        channel?.parentId,
+        channel?.parent?.id,
+        channel?.parent?.parentId,
+        channel?.parent?.parent?.id
+    ].filter(Boolean).map(String);
+    // Keep message handling alive if an older/misconfigured deployment has
+    // no WIKI_MAP export yet. The default wiki still handles the message.
+    const wikiMap = WIKI_MAP || {};
+    const configuredId = channelAndCategoryIds.find(id => wikiMap[id]);
+    const defaultWikiKey = wikiMap[configuredId]
+        || Object.keys(WIKIS).find(key => WIKIS[key].default)
+        || Object.keys(WIKIS)[0];
+    const defaultWikiConfig = WIKIS[defaultWikiKey];
 
     let wikiConfig = null;
     if (prefix) {
         // Explicit prefixes override the wiki configured for this channel.
         wikiConfig = WIKIS[PREFIX_WIKI_MAP[prefix.toLowerCase()]];
+        // Unknown prefixes may be MediaWiki interwiki prefixes. Keep the
+        // original prefix in the page name until handleUserRequest confirms
+        // it through the source wiki's interwiki map. This also preserves
+        // ordinary local namespaces such as [[File:...]].
+        if (!wikiConfig) {
+            rawPageName = `${prefix}:${matchedPageName}`;
+            wikiConfig = defaultWikiConfig;
+        }
     } else {
-        // The same config map supports both channel-specific and category-wide
-        // defaults. Put the channel first so a channel override wins over its
-        // parent category.
-        const channelAndCategoryIds = [
-            channel?.id,
-            channel?.parentId,
-            channel?.parent?.id,
-            channel?.parent?.parentId,
-            channel?.parent?.parent?.id
-        ].filter(Boolean).map(String);
-        // Keep message handling alive if an older/misconfigured deployment has
-        // no WIKI_MAP export yet. The default wiki still handles the message.
-        const wikiMap = WIKI_MAP || {};
-        const configuredId = channelAndCategoryIds.find(id => wikiMap[id]);
-        const wikiKey = wikiMap[configuredId] || DEFAULT_WIKI;
-        wikiConfig = WIKIS[wikiKey];
+        wikiConfig = defaultWikiConfig;
     }
 
     const rawLower = rawPageName.toLowerCase();
@@ -112,14 +119,40 @@ function getWikiAndPage(messageContent, channel) {
         rawPageName = "Template:" + rawPageName.slice(2).trim();
     }
 
-    return { wikiConfig, rawPageName };
+    // Template embeds default to the Template: namespace, like wikitext.
+    // {{:this}} (or an explicit namespace such as {{Help:this}}) opts out.
+    if (isTemplate && !escapeDefaultNamespace && !rawPageName.includes(":")) {
+        rawPageName = `Template:${rawPageName}`;
+    }
+
+    return { wikiConfig, rawPageName, label: matchedPageName };
+}
+
+function getWikiAndPages(messageContent, channel) {
+    if (typeof messageContent !== "string") return [];
+    return findSyntaxMatches(messageContent)
+        .map(match => getWikiAndPageFromMatch(match, channel))
+        .filter(Boolean);
 }
 
 client.on("messageCreate", async (message) => {
     try {
         if (message.author?.bot) return;
+        if (INLINE_TEXT === false) return;
 
-        const res = getWikiAndPage(message.content, message.channel);
+        const pageRequests = getWikiAndPages(message.content, message.channel);
+        if (pageRequests.length > 1) {
+            const response = await handleMultiplePageRequests(pageRequests, message);
+            if (response && response.id) {
+                responseMap.set(message.id, response.id);
+                botToAuthorMap.set(response.id, message.author.id);
+                pruneMap(responseMap);
+                pruneMap(botToAuthorMap);
+            }
+            return;
+        }
+
+        const res = pageRequests[0] || null;
         if (!res) return;
 
         const { wikiConfig, rawPageName } = res;
@@ -162,8 +195,10 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
     if (newMessage.author?.bot) return;
     if (oldMessage.content === newMessage.content) return;
     if (!responseMap.has(newMessage.id)) return;
+    if (INLINE_TEXT === false) return;
 
-    const res = getWikiAndPage(newMessage.content, newMessage.channel);
+    const pageRequests = getWikiAndPages(newMessage.content, newMessage.channel);
+    const res = pageRequests[0] || null;
     if (!res) return;
 
     const { wikiConfig, rawPageName } = res;
@@ -172,7 +207,9 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
     try {
         const botMessage = await newMessage.channel.messages.fetch(botMessageId);
         if (botMessage) {
-            const response = await handleUserRequest(wikiConfig, rawPageName, newMessage, botMessage);
+            const response = pageRequests.length > 1
+                ? await handleMultiplePageRequests(pageRequests, newMessage, botMessage)
+                : await handleUserRequest(wikiConfig, rawPageName, newMessage, botMessage);
             if (response && response.id) {
                 botToAuthorMap.set(response.id, newMessage.author.id);
                 pruneMap(botToAuthorMap);
